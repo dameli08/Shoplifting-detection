@@ -1,0 +1,36 @@
+data:
+  dataset_root: /home/damelikassym/RetailS/RetailS
+  train_pose_dir: RetailS_train/pose/train
+  staged_pose_dir: RetailS_test_staged/pose/test
+  staged_gt_dir: RetailS_test_staged/gt/test_frame_mask
+  real_pose_dir: RetailS_test_realworld/pose/test
+  real_gt_dir: RetailS_test_realworld/gt/test_frame_mask
+
+features:
+  window_size: 30
+  stride: 5
+  min_track_len: 15
+  min_confidence: 0.05
+
+train:
+  seed: 42
+  hidden_size: 192
+  latent_size: 192
+  num_layers: 2
+  dropout: 0.2
+  lr: 0.0006
+  weight_decay: 0.00001
+  epochs: 24
+  grad_clip_norm: 1.0
+  num_workers: 8
+  batch_size: auto
+  max_train_windows: 800000
+  mixed_precision: true
+
+inference:
+  train_threshold_quantile: 0.995
+  person_aggregation: max
+  frame_fill_value: 0.0
+
+eval:
+  primary_metric: hprs

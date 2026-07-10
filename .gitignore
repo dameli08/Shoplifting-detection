@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+runs/*
+!runs/.gitkeep
+*.log
+*.pt
+*.pth
+*.npy
+*.npz

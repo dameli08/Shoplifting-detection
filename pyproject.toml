@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "retails-bilstm"
+version = "0.1.0"
+description = "RetailS pose-based one-class BiLSTM anomaly detection pipeline"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "scikit-learn>=1.5",
+  "tqdm>=4.66",
+  "pyyaml>=6.0",
+  "torch>=2.7",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+retails-bilstm = "retails_bilstm.cli:main"
