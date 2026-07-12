@@ -125,22 +125,50 @@ def train_main(cfg: Dict[str, Any], output_dir: str) -> Tuple[str, Dict[str, Any
         lr=float(tcfg["lr"]),
         weight_decay=float(tcfg["weight_decay"]),
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=int(tcfg["epochs"]))
+    total_epochs = int(tcfg["epochs"])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision)
+
+    early_stopping_patience = int(tcfg.get("early_stopping_patience", 0))
+    early_stopping_min_delta = float(tcfg.get("early_stopping_min_delta", 0.0))
+    early_stopping_min_epochs = int(tcfg.get("early_stopping_min_epochs", 1))
+    use_early_stopping = early_stopping_patience > 0
+    epochs_without_improve = 0
+    stopped_early = False
+    stop_epoch = total_epochs
 
     train_losses = []
     best_loss = float("inf")
     best_path = os.path.join(output_dir, "best_model.pt")
+    periodic_ckpt_every = int(tcfg.get("checkpoint_every_n_steps", 0))
+    periodic_dir = os.path.join(output_dir, "checkpoints")
+    if periodic_ckpt_every > 0:
+        os.makedirs(periodic_dir, exist_ok=True)
+    global_step = 0
+
+    def _checkpoint_payload(loss_value: float) -> Dict[str, Any]:
+        return {
+            "model_state": model.state_dict(),
+            "config": cfg,
+            "feature_dim": feature_dim,
+            "window_size": window_size,
+            "stride": stride,
+            "min_confidence": min_conf,
+            "train_loss": float(loss_value),
+            "batch_size": batch_size,
+            "device": str(device),
+            "global_step": int(global_step),
+        }
 
     print(f"[train] device={device}, feature_dim={feature_dim}, batch_size={batch_size}, tracks={len(tracks)}, windows/epoch={samples_per_epoch}")
     print(f"[train] trainable_params={count_parameters(model):,}")
 
-    for epoch in range(1, int(tcfg["epochs"]) + 1):
+    for epoch in range(1, total_epochs + 1):
         model.train()
         running = 0.0
         n = 0
 
-        pbar = tqdm(dl, desc=f"epoch {epoch}/{int(tcfg['epochs'])}")
+        pbar = tqdm(dl, desc=f"epoch {epoch}/{total_epochs}")
         for batch in pbar:
             x = batch.to(device, non_blocking=True)
 
@@ -156,28 +184,41 @@ def train_main(cfg: Dict[str, Any], output_dir: str) -> Tuple[str, Dict[str, Any
 
             running += float(loss.item()) * x.size(0)
             n += int(x.size(0))
+            global_step += 1
             pbar.set_postfix(loss=f"{running / max(n,1):.6f}")
+
+            if periodic_ckpt_every > 0 and global_step % periodic_ckpt_every == 0:
+                periodic_path = os.path.join(
+                    periodic_dir,
+                    f"epoch_{epoch:03d}_step_{global_step:07d}.pt",
+                )
+                torch.save(_checkpoint_payload(running / max(n, 1)), periodic_path)
 
         scheduler.step()
         epoch_loss = running / max(n, 1)
         train_losses.append(epoch_loss)
 
-        if epoch_loss < best_loss:
+        if not np.isfinite(epoch_loss):
+            print(f"[train] non-finite loss at epoch {epoch}, stopping early")
+            stopped_early = True
+            stop_epoch = epoch
+            break
+
+        if epoch_loss < (best_loss - early_stopping_min_delta):
             best_loss = epoch_loss
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "config": cfg,
-                    "feature_dim": feature_dim,
-                    "window_size": window_size,
-                    "stride": stride,
-                    "min_confidence": min_conf,
-                    "train_loss": epoch_loss,
-                    "batch_size": batch_size,
-                    "device": str(device),
-                },
-                best_path,
+            epochs_without_improve = 0
+            torch.save(_checkpoint_payload(epoch_loss), best_path)
+        else:
+            epochs_without_improve += 1
+
+        if use_early_stopping and epoch >= early_stopping_min_epochs and epochs_without_improve >= early_stopping_patience:
+            print(
+                f"[train] early stopping at epoch {epoch} "
+                f"(patience={early_stopping_patience}, min_delta={early_stopping_min_delta})"
             )
+            stopped_early = True
+            stop_epoch = epoch
+            break
 
     # Fit threshold from train reconstruction errors on a sampled subset.
     model.load_state_dict(torch.load(best_path, map_location=device)["model_state"])
@@ -210,7 +251,14 @@ def train_main(cfg: Dict[str, Any], output_dir: str) -> Tuple[str, Dict[str, Any
     summary = {
         "created_at": int(time.time()),
         "best_train_loss": float(best_loss),
-        "epochs": int(tcfg["epochs"]),
+        "epochs": total_epochs,
+        "stopped_early": bool(stopped_early),
+        "stop_epoch": int(stop_epoch),
+        "early_stopping_patience": int(early_stopping_patience),
+        "early_stopping_min_delta": float(early_stopping_min_delta),
+        "early_stopping_min_epochs": int(early_stopping_min_epochs),
+        "checkpoint_every_n_steps": int(periodic_ckpt_every),
+        "final_global_step": int(global_step),
         "batch_size": int(batch_size),
         "feature_dim": int(feature_dim),
         "tracks": int(len(tracks)),
